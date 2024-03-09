@@ -9,7 +9,7 @@ import config
 import time
 
 parser = argparse.ArgumentParser(description="Trains a CARLA agent")
-parser.add_argument("--host", default="localhost", type=str, help="IP of the host server (default: 127.0.0.1)")
+parser.add_argument("--host", default="192.168.0.10", type=str, help="IP of the host server (default: 127.0.0.1)")
 parser.add_argument("--port", default=2000, type=int, help="TCP port to listen to (default: 2000)")
 parser.add_argument("--town", default="Town01", type=str, help="Name of the map in CARLA")
 parser.add_argument("--total_timesteps", type=int, default=1_000_000, help="Total timestep to train for")
@@ -51,12 +51,8 @@ env = CarlaEnv(host=args["host"], port=args["port"], town=args["town"],
                     view_res=(1120, 560), action_smoothing=CONFIG["action_smoothing"],
                     allow_spectator=True, allow_render=args["no_render"])
 
-for wrapper_class_str in CONFIG["wrappers"]:
-    wrap_class, wrap_params = parse_wrapper_class(wrapper_class_str)
-    env = wrap_class(env, *wrap_params)
-
 if reload_model == "":
-    model = AlgorithmRL('CnnPolicy', env, verbose=1, seed=seed, tensorboard_log=log_dir, device='cuda',
+    model = AlgorithmRL('CnnPolicy', env, verbose=2, tensorboard_log=log_dir, device='cuda',
                         **CONFIG["algorithm_params"])
     model_suffix = f"{int(time.time())}_id{args['config']}"
 else:

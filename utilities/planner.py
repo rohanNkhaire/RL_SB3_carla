@@ -32,7 +32,6 @@ def compute_route_waypoints(world_map, start_waypoint, end_waypoint, resolution=
     if plan is None:
         # Setting up global router
         grp = GlobalRoutePlanner(world_map, resolution)
-        grp.setup()
         
         # Obtain route plan
         route = grp.trace_route(

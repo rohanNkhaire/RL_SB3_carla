@@ -21,8 +21,8 @@ def create_reward_fn(reward_fn):
             # Stop if speed is less than 1.0 km/h after the first 5s of an episode
             global low_speed_timer
             low_speed_timer += 1.0 / env.fps
-            speed = env.vehicle.get_speed()
-            if low_speed_timer > 5.0 and speed < 1.0 and env.current_waypoint_index >= 1:
+            speed = env.get_vehicle_lon_speed()
+            if low_speed_timer > 5.0 and speed < 1.0 and env.current_waypoint_index >= 0:
                 env.terminate = True
                 terminal_reason = "Vehicle stopped"
 
@@ -67,8 +67,10 @@ def reward_fn5(env):
                * distance_std_factor (1 when std from center lane is low, 0 when not)
     """
 
-    angle = env.vehicle.get_angle(env.current_waypoint)
-    speed_kmh = env.vehicle.get_speed()
+    veh_angle = env.vehicle.get_transform().rotation.yaw
+    wayp_angle = env.current_waypoint.transform.rotation.yaw
+    angle = abs(wayp_angle - veh_angle)
+    speed_kmh = env.get_vehicle_lon_speed()
     if speed_kmh < min_speed:  # When speed is in [0, min_speed] range
         speed_reward = speed_kmh / min_speed  # Linearly interpolate [0, 1] over [0, min_speed]
     elif speed_kmh > target_speed:  # When speed is in [target_speed, inf]
@@ -102,7 +104,7 @@ def reward_fn_waypoints(env):
             - When the vehicle does not pass a waypoint, it receives a reward of 0.0
     """
     angle = env.vehicle.get_angle(env.current_waypoint)
-    speed_kmh = env.vehicle.get_speed()
+    speed_kmh = env.get_vehicle_lon_speed()
     if speed_kmh < min_speed:  # When speed is in [0, min_speed] range
         speed_reward = speed_kmh / min_speed  # Linearly interpolate [0, 1] over [0, min_speed]
     elif speed_kmh > target_speed:  # When speed is in [target_speed, inf]

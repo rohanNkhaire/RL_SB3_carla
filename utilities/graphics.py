@@ -26,7 +26,7 @@ Use ARROWS or WASD keys for control.
 
 import pygame
 import math
-from carla_env.wrappers import get_actor_display_name
+from utilities.utils import get_actor_display_name
 #===============================================================================
 # HUD
 #===============================================================================
@@ -72,7 +72,7 @@ class HUD(object):
                 "Server:  % 16d FPS" % self.server_fps,
                 "Client:  % 16d FPS" % clock.get_fps(),
                 "",
-                "Map:     % 20s" % world.map.name,
+                "Map:     % 20s" % world.get_map().name,
                 #"Simulation time: % 12s" % datetime.timedelta(seconds=int(self.simulation_time)),
                 "Number of vehicles: % 8d" % len(vehicles)
             ]

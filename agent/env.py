@@ -5,19 +5,17 @@ import random
 import numpy as np
 import math
 from gym import spaces
-from absl import logging
 from collections import deque
 import pygame
 import cv2
+import copy
 
 
-from utils.graphics import HUD
-from utils.utils import get_actor_display_name, smooth_action, vector, distance_to_line, build_projection_matrix, get_image_point
-from agent.actions import CarlaActions
-from agent.observation import CarlaObservations
-from utils.planner import compute_route_waypoints
-
-logging.set_verbosity(logging.INFO)
+from utilities.graphics import HUD
+from utilities.utils import get_actor_display_name, smooth_action, vector, distance_to_line, build_projection_matrix, get_image_point
+from core_rl.actions import CarlaActions
+from core_rl.observation import CarlaObservations
+from utilities.planner import compute_route_waypoints
 
 # Carla environment
 class CarlaEnv(gym.Env):
@@ -33,6 +31,7 @@ class CarlaEnv(gym.Env):
         self.spectator_camera = None
         self.episode_idx = -2
         self.world = None
+        self.fps = fps
         self.actions = CarlaActions()
         self.observations = CarlaObservations(self.obs_height, self.obs_width)
         self.obs_sensor = obs_sensor
@@ -41,7 +40,7 @@ class CarlaEnv(gym.Env):
         self.observation_space = self.observations.get_observation_space()
         self.max_distance = 3000
         self.action_smoothing = action_smoothing
-        self.reward_fn = (lambda x: 0) if not callable(reward_fn) else reward_fn 
+        self.reward_fn = (lambda x: 0) if not callable(reward_fn) else reward_fn
 
         try:
             self.client = carla.Client(host, port)  
@@ -56,9 +55,10 @@ class CarlaEnv(gym.Env):
                     fixed_delta_seconds=1.0 / fps,
                 ))
             self.client.reload_world(False)  # reload map keeping the world settings
+            self.map = self.world.get_map()
 
             # Spawn Vehicle
-            self.tesla = self.world.blueprint_library.filter('model3')[0]
+            self.tesla = self.world.get_blueprint_library().filter('model3')[0]
             self.start_transform = self._get_start_transform()
             self.curr_loc = self.start_transform.location
             self.vehicle = self.world.spawn_actor(self.tesla, self.start_transform)
@@ -84,7 +84,7 @@ class CarlaEnv(gym.Env):
             # Set observation image
             if 'rgb' in self.obs_sensor:
                 self.rgb_cam = self.world.get_blueprint_library().find('sensor.camera.rgb')
-            elif 'semantic' in self.sensors:
+            elif 'semantic' in self.obs_sensor:
                 self.rgb_cam = self.world.get_blueprint_library().find('sensor.camera.semantic_segmentation')
             else:
                 raise NotImplementedError('unknown sensor type')
@@ -101,28 +101,30 @@ class CarlaEnv(gym.Env):
             # Set spectator cam   
             if self.allow_spectator:
                 self.spectator_camera = self.world.get_blueprint_library().find('sensor.camera.rgb')
-                self.spectator_camera.set_attribute('image_size_x', '800')
-                self.spectator_camera.set_attribute('image_size_y', '800')
+                self.spectator_camera.set_attribute('image_size_x', f'{self.spectator_width}')
+                self.spectator_camera.set_attribute('image_size_y', f'{self.spectator_height}')
                 self.spectator_camera.set_attribute('fov', '100')
-                transform = carla.Transform(carla.Location(x=-5.5, z=2.5), carla.Rotation(pitch=8.0))
-                self.spectator_sensor = self.world.spawn_actor(self.spectator_camera, transform, attach_to=self.vehicle, attachment_type=carla.AttachmentType.SpringArm)
+                transform = carla.Transform(carla.Location(x=-5.5, z=2.5), carla.Rotation(pitch=-10.0))
+                self.spectator_sensor = self.world.spawn_actor(self.spectator_camera, transform, attach_to=self.vehicle)
                 self.spectator_sensor.listen(self._set_viewer_image)
                     
         except RuntimeError as msg:
             pass
 
         self.reset()
-
-
+    
     # Resets environment for new episode
     def reset(self):
 
         self.episode_idx += 1
         self.num_routes_completed = -1
+
         # Generate a random route
         self.generate_route()
 
+        self.closed = False
         self.terminate = False
+        self.success_state = False
         self.extra_info = []  # List of extra info shown on the HUD
         self.observation = self.observation_buffer = None  # Last received observation
         self.viewer_image = self.viewer_image_buffer = None  # Last received image to show in the viewer
@@ -147,21 +149,20 @@ class CarlaEnv(gym.Env):
     def generate_route(self):
         # Do a soft reset (teleport vehicle)
         self.control.steer = float(0.0)
-        self.control.brake = float(0.0)
         self.control.throttle = float(0.0)
         self.vehicle.set_simulate_physics(False)  # Reset the car's physics
 
         # Generate waypoints along the lap
 
-        spawn_points_list = np.random.choice(self.world.map.get_spawn_points(), 2, replace=False)
+        spawn_points_list = np.random.choice(self.map.get_spawn_points(), 2, replace=False)
         route_length = 1
         while route_length <= 1:
-            self.start_wp, self.end_wp = [self.world.map.get_waypoint(spawn.location) for spawn in
+            self.start_wp, self.end_wp = [self.map.get_waypoint(spawn.location) for spawn in
                                           spawn_points_list]
-            self.route_waypoints = compute_route_waypoints(self.world.map, self.start_wp, self.end_wp, resolution=1.0)
+            self.route_waypoints = compute_route_waypoints(self.map, self.start_wp, self.end_wp, resolution=1.0)
             route_length = len(self.route_waypoints)
             if route_length <= 1:
-                spawn_points_list = np.random.choice(self.world.map.get_spawn_points(), 2, replace=False)
+                spawn_points_list = np.random.choice(self.map.get_spawn_points(), 2, replace=False)
 
         self.distance_from_center_history = deque(maxlen=30)
 
@@ -169,7 +170,7 @@ class CarlaEnv(gym.Env):
         self.num_routes_completed += 1
         self.vehicle.set_transform(self.start_wp.transform)
         time.sleep(0.2)
-        self.vehicle.set_simulate_physics(True)
+        self.vehicle.set_simulate_physics(True)     
 
     # Steps environment
     def step(self, action):
@@ -179,11 +180,10 @@ class CarlaEnv(gym.Env):
             if self.current_waypoint_index >= len(self.route_waypoints) - 1:
                 self.success_state = True
 
-            throttle, brake, steer = [float(a) for a in action]
+            throttle, steer = [float(a) for a in action]
 
             # Perfom action
             self.control.throttle = smooth_action(self.control.throttle, throttle, self.action_smoothing)
-            self.control.brake = smooth_action(self.control.brake, brake, self.action_smoothing)
             self.control.steer = smooth_action(self.control.steer, steer, self.action_smoothing)
 
             self.vehicle.apply_control(self.control)
@@ -235,7 +235,7 @@ class CarlaEnv(gym.Env):
         self.previous_location = transform.location
 
         # Accumulate speed
-        self.speed_accum += self.vehicle.get_speed()
+        self.speed_accum += self.get_vehicle_lon_speed()
 
         # Terminal on max distance
         if self.distance_traveled >= self.max_distance and not self.eval:
@@ -251,7 +251,7 @@ class CarlaEnv(gym.Env):
 
         if self.allow_render:
             pygame.event.pump()
-            if pygame.key.get_pressed()[K_ESCAPE]:
+            if pygame.key.get_pressed()[pygame.K_ESCAPE]:
                 self.close()
                 self.terminate = True
             self.render()
@@ -266,7 +266,7 @@ class CarlaEnv(gym.Env):
             'mean_reward': (self.total_reward / self.step_count)
         }
 
-        return self.observation, self.last_reward, self.terminate or self.success_state, info
+        return self.get_semantic_image(self.observation), self.last_reward, self.terminate or self.success_state, info
     
     def close(self):
         pygame.quit()
@@ -299,9 +299,9 @@ class CarlaEnv(gym.Env):
             self.display.blit(pygame.surfarray.make_surface(self.viewer_image.swapaxes(0, 1)), (0, 0))
 
         # Superimpose current observation into top-right corner
-        obs_h, obs_w = self.observation.shape[:2]
+        obs_h, obs_w = self.observation.height, self.observation.width
         pos_observation = (self.display.get_size()[0] - obs_w - 10, 10)
-        self.display.blit(pygame.surfarray.make_surface(self.observation.swapaxes(0, 1)), pos_observation)
+        self.display.blit(pygame.surfarray.make_surface(self.get_semantic_image(self.observation).swapaxes(0, 1)), pos_observation)
 
         # Render HUD
         self.hud.render(self.display, extra_info=self.extra_info)
@@ -309,6 +309,50 @@ class CarlaEnv(gym.Env):
         # Render to screen
         pygame.display.flip()
 
+    def get_vehicle_lon_speed(self):
+        carla_velocity_vec3 = self.vehicle.get_velocity()
+        vec4 = np.array([carla_velocity_vec3.x,
+                         carla_velocity_vec3.y,
+                         carla_velocity_vec3.z, 1]).reshape(4, 1)
+        carla_trans = np.array(self.vehicle.get_transform().get_matrix())
+        carla_trans.reshape(4, 4)
+        carla_trans[0:3, 3] = 0.0
+        vel_in_vehicle = np.linalg.inv(carla_trans) @ vec4
+        return vel_in_vehicle[0]  
+
+    def get_rgb_image(self, input):
+        # Converting to suitable format for opencv function
+        image = np.frombuffer(input.raw_data, dtype=np.uint8)
+        image = image.reshape((input.height, input.width, 4))
+        image = image[: ,: ,:3]
+        image = image[:, :, ::-1].copy()
+
+        return image
+
+    def get_semantic_image(self, input):
+        image = image = np.frombuffer(input.raw_data, dtype=np.uint8)
+        image = image.reshape((input.height, input.width, 4))
+        image = image[:, :, 2]
+        classes = {
+            0: [0, 0, 0],         # None
+            1: [70, 70, 70],      # Buildings
+            2: [190, 153, 153],   # Fences
+            3: [72, 0, 90],       # Other
+            4: [220, 20, 60],     # Pedestrians
+            5: [153, 153, 153],   # Poles
+            6: [157, 234, 50],    # RoadLines
+            7: [128, 64, 128],    # Roads
+            8: [244, 35, 232],    # Sidewalks
+            9: [107, 142, 35],    # Vegetation
+            10: [0, 0, 255],      # Vehicles
+            11: [102, 102, 156],  # Walls
+            12: [220, 220, 0]     # TrafficSigns
+    }
+        result = np.zeros((image.shape[0], image.shape[1], 3))
+        for key, value in classes.items():
+            result[np.where(image == key)] = value
+        return result
+        
     def _destroy_agents(self):
 
         for actor in self.actor_list:
@@ -345,14 +389,14 @@ class CarlaEnv(gym.Env):
     def _get_observation(self):
         while self.observation_buffer is None:
             pass
-        obs = self.observation_buffer.copy()
+        obs = self.observation_buffer
         self.observation_buffer = None
         return obs
 
     def _get_viewer_image(self):
         while self.viewer_image_buffer is None:
             pass
-        image = self.viewer_image_buffer.copy()
+        image = self.viewer_image_buffer
         self.viewer_image_buffer = None
         return image
 
@@ -371,19 +415,22 @@ class CarlaEnv(gym.Env):
         """
         vehicle_vector = vector(self.vehicle.get_transform().location)
         # Get the world to camera matrix
-        world_2_camera = np.array(camera.get_transform().get_inverse_matrix())
+        world_2_camera = np.array(image.transform.get_inverse_matrix())
 
         # Get the attributes from the camera
-        image_w = int(camera.actor.attributes['image_size_x'])
-        image_h = int(camera.actor.attributes['image_size_y'])
-        fov = float(camera.actor.attributes['fov'])
+        image_w = int(image.height)
+        image_h = int(image.width)
+        fov = float(image.fov)
+
+        image = self.get_rgb_image(image)
+
         for i in range(self.current_waypoint_index, len(self.route_waypoints)):
             waypoint_location = self.route_waypoints[i][0].transform.location + carla.Location(z=1.25)
             waypoint_vector = vector(waypoint_location)
             if not (2 < abs(np.linalg.norm(vehicle_vector - waypoint_vector)) < 50):
                 continue
             # Calculate the camera projection matrix to project from 3D -> 2D
-            K = build_projection_matrix(image_w, image_h, fov)
+            K = build_projection_matrix(image_h, image_w, fov)
             x, y = get_image_point(waypoint_location, K, world_2_camera)
             if i == len(self.route_waypoints) - 1:
                 color = (255, 0, 0)
