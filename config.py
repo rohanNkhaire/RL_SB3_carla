@@ -93,8 +93,6 @@ _CONFIG_1 = {
     "reward_params": reward_params["reward_fn_5_best"],
     "obs_sensor": "semantic",
     "obs_res": (160, 80),
-    "seed": 100,
-    "wrappers": []
 }
 CONFIGS = {
     "1": _CONFIG_1

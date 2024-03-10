@@ -37,8 +37,6 @@ os.makedirs(log_dir, exist_ok=True)
 reload_model = args["reload_model"]
 total_timesteps = args["total_timesteps"]
 
-seed = CONFIG["seed"]
-
 algorithm_dict = {"PPO": PPO, "DDPG": DDPG, "SAC": SAC}
 if CONFIG["algorithm"] not in algorithm_dict:
     raise ValueError("Invalid algorithm name")
@@ -56,7 +54,7 @@ if reload_model == "":
                         **CONFIG["algorithm_params"])
     model_suffix = f"{int(time.time())}_id{args['config']}"
 else:
-    model = AlgorithmRL.load(reload_model, env=env, device='cuda', seed=seed, **CONFIG["algorithm_params"])
+    model = AlgorithmRL.load(reload_model, env=env, device='cuda', **CONFIG["algorithm_params"])
     model_suffix = f"{reload_model.split('/')[-2].split('_')[-1]}_finetuning"
 
 model_name = f'{model.__class__.__name__}_{model_suffix}'

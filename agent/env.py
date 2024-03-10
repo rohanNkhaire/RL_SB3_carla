@@ -8,7 +8,6 @@ from gym import spaces
 from collections import deque
 import pygame
 import cv2
-import copy
 
 
 from utilities.graphics import HUD
